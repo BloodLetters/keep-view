@@ -1,0 +1,15 @@
+[package]
+name = "keep-view"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wry = "0.57"
+tao = { version = "0.37", features = ["rwh_06"] }
+tray-icon = "0.26"
+global-hotkey = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dirs = "6.0"
+open = "5.4"
+url = "2.5"

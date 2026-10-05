@@ -24,6 +24,7 @@ pub const WIDGET_SCRIPT: &str = r##"
             <div class="kw-pill-expanded">
                 <span class="kw-pill-text" id="kw-pill-status">${isOnline ? 'Online' : 'Offline'}</span>
                 <span class="kw-sep">|</span>
+                <button class="kw-pill-btn" id="kw-pill-drag" title="Geser / Pindahkan Widget">✥</button>
                 <button class="kw-pill-btn" id="kw-btn-search" title="Cari Catatan (Ctrl+F)">🔍</button>
                 <button class="kw-pill-btn" id="kw-zoom-out" title="Perkecil Zoom">-</button>
                 <span class="kw-zoom-label" id="kw-zoom-val">100%</span>
@@ -43,6 +44,20 @@ pub const WIDGET_SCRIPT: &str = r##"
         `;
         searchBar.style.display = 'none';
 
+        // Floating Top Drag Bar for frameless window
+        if (!document.getElementById('keep-window-drag-bar')) {
+            const dragBar = document.createElement('div');
+            dragBar.id = 'keep-window-drag-bar';
+            dragBar.title = 'Drag untuk memindahkan jendela widget';
+            document.documentElement.appendChild(dragBar);
+
+            dragBar.addEventListener('mousedown', (e) => {
+                if (e.button === 0) {
+                    sendIpc({ type: 'drag_window' });
+                }
+            });
+        }
+
         document.documentElement.appendChild(pill);
         document.documentElement.appendChild(searchBar);
 
@@ -52,6 +67,17 @@ pub const WIDGET_SCRIPT: &str = r##"
             e.stopPropagation();
             sendIpc({ type: 'toggle_pin' });
         });
+
+        const dragBtn = document.getElementById('kw-pill-drag');
+        if (dragBtn) {
+            dragBtn.addEventListener('mousedown', (e) => {
+                if (e.button === 0) {
+                    e.stopPropagation();
+                    sendIpc({ type: 'drag_window' });
+                }
+            });
+        }
+
 
         document.getElementById('kw-btn-sync').addEventListener('click', (e) => {
             e.stopPropagation();
@@ -95,66 +121,33 @@ pub const WIDGET_SCRIPT: &str = r##"
                 toggleSearchBar(false);
             }
         });
-    }
 
-    // --- Remove Sidebar Safely (Preserving All Notes) ---
-    function removeSidebarSafely() {
-        const main = document.querySelector('div[role="main"], main');
-
-        // 1. Always protect and stretch main notes container
-        if (main) {
-            main.style.setProperty('display', 'block', 'important');
-            main.style.setProperty('visibility', 'visible', 'important');
-            main.style.setProperty('opacity', '1', 'important');
-            main.style.setProperty('margin-left', '0px', 'important');
-            main.style.setProperty('left', '0px', 'important');
-            main.style.setProperty('width', '100%', 'important');
-            main.style.setProperty('max-width', '100%', 'important');
-            main.style.setProperty('padding', '8px 12px 64px 12px', 'important');
-            main.style.setProperty('box-sizing', 'border-box', 'important');
-        }
-
-        // 2. Target the exact PvRhvb sidebar elements and role=tab navigation
-        const targetElements = document.querySelectorAll(
-            '[class*="PvRhvb"], ' +
-            '[role="tab"][aria-label="Catatan"], ' +
-            '[role="tab"][aria-label="Pengingat"], ' +
-            '[role="tab"][aria-label="Notes"], ' +
-            '[role="tab"][aria-label="Reminders"], ' +
-            '[role="tab"][aria-label="Arsip"], ' +
-            '[role="tab"][aria-label="Arsipkan"], ' +
-            '[role="tab"][aria-label="Archive"], ' +
-            '[role="tab"][aria-label="Sampah"], ' +
-            '[role="tab"][aria-label="Trash"], ' +
-            '[role="tab"][data-tooltip-text]'
-        );
-
-        targetElements.forEach(el => {
-            if (main && (el === main || main.contains(el))) return;
-
-            el.style.setProperty('display', 'none', 'important');
-            el.style.setProperty('width', '0px', 'important');
-            el.style.setProperty('height', '0px', 'important');
-            el.style.setProperty('visibility', 'hidden', 'important');
-            el.style.setProperty('position', 'absolute', 'important');
-            el.style.setProperty('left', '-9999px', 'important');
-            el.style.setProperty('pointer-events', 'none', 'important');
-
-            // Hide the rail container wrapper
-            let p = el.parentElement;
-            while (p && p !== document.body && (!main || !p.contains(main))) {
-                const rect = p.getBoundingClientRect();
-                if (rect.left <= 25 && rect.width <= 150) {
-                    p.style.setProperty('display', 'none', 'important');
-                    p.style.setProperty('width', '0px', 'important');
-                    p.style.setProperty('visibility', 'hidden', 'important');
-                    p.style.setProperty('position', 'absolute', 'important');
-                    p.style.setProperty('left', '-9999px', 'important');
-                    p.style.setProperty('pointer-events', 'none', 'important');
-                }
-                p = p.parentElement;
+        // Drag window from empty background area
+        document.addEventListener('mousedown', (e) => {
+            if (e.button === 0 && (e.target === document.documentElement || e.target === document.body)) {
+                sendIpc({ type: 'drag_window' });
             }
         });
+    }
+
+    // --- Clean and Safe Sidebar Rail Collapse ---
+    function hideSidebarRail() {
+        const nav = document.querySelector('[role="navigation"], [class*="PvRhvb"], nav');
+        if (!nav) return;
+
+        nav.style.setProperty('display', 'none', 'important');
+
+        // Check if there is an outer rail wrapper (must be left-aligned narrow element not containing main)
+        const main = document.querySelector('div[role="main"], main');
+        let parent = nav.parentElement;
+        while (parent && parent !== document.body && (!main || !parent.contains(main))) {
+            const rect = parent.getBoundingClientRect();
+            if (rect.width > 0 && rect.width <= 320 && rect.left < 50) {
+                parent.style.setProperty('display', 'none', 'important');
+                break;
+            }
+            parent = parent.parentElement;
+        }
     }
 
     // --- Search Helper ---
@@ -202,7 +195,11 @@ pub const WIDGET_SCRIPT: &str = r##"
     }
 
     function applyZoom() {
-        document.body.style.zoom = currentZoom;
+        if (Math.abs(currentZoom - 1.0) < 0.01) {
+            document.body.style.removeProperty('zoom');
+        } else {
+            document.body.style.zoom = currentZoom;
+        }
         const valElem = document.getElementById('kw-zoom-val');
         if (valElem) {
             valElem.textContent = Math.round(currentZoom * 100) + '%';
@@ -340,8 +337,11 @@ pub const WIDGET_SCRIPT: &str = r##"
 
     // --- Rust IPC Helper ---
     function sendIpc(data) {
+        const payload = JSON.stringify(data);
         if (window.ipc && window.ipc.postMessage) {
-            window.ipc.postMessage(JSON.stringify(data));
+            window.ipc.postMessage(payload);
+        } else if (window.chrome && window.chrome.webview && window.chrome.webview.postMessage) {
+            window.chrome.webview.postMessage(payload);
         }
     }
 
@@ -365,6 +365,10 @@ pub const WIDGET_SCRIPT: &str = r##"
         applyZoom();
     };
 
+    window.__KEEP_SET_COMPACT__ = function(_compact) {
+        // Tampilan catatan tengah selalu rapi dan terpusat
+    };
+
     // --- Inject Styles ---
     function injectStyles() {
         if (document.getElementById('keep-widget-custom-styles')) return;
@@ -373,66 +377,41 @@ pub const WIDGET_SCRIPT: &str = r##"
         style.id = 'keep-widget-custom-styles';
         style.textContent = `
             /* ========================================================
-               1. HIDE GOOGLE TOP HEADER & SIDEBAR NAVIGATION
+               1. HIDE TOP BAR (HEADER) & SIDEBAR NAVIGATION
                ======================================================== */
             header,
             #gb,
             div[role="banner"],
+            [role="navigation"],
             [class*="PvRhvb"],
-            [role="tab"][aria-label="Catatan"],
-            [role="tab"][aria-label="Pengingat"],
-            [role="tab"][aria-label="Notes"],
-            [role="tab"][aria-label="Reminders"],
-            [role="tab"][aria-label="Arsip"],
-            [role="tab"][aria-label="Arsipkan"],
-            [role="tab"][aria-label="Archive"],
-            [role="tab"][aria-label="Sampah"],
-            [role="tab"][aria-label="Trash"],
-            [role="tab"][data-tooltip-text] {
+            nav,
+            aside {
                 display: none !important;
-                width: 0 !important;
-                height: 0 !important;
-                visibility: hidden !important;
-                position: absolute !important;
-                left: -9999px !important;
-                pointer-events: none !important;
             }
 
             /* ========================================================
-               2. MAIN NOTES CONTAINER: FULL WIDTH & ALWAYS VISIBLE
+               2. FOCUS CENTER VIEW (MAIN NOTES CONTAINER)
                ======================================================== */
             html, body {
                 padding: 0 !important;
                 margin: 0 !important;
-                overflow-x: hidden !important;
                 background-color: #202124 !important;
             }
 
             div[role="main"],
             main {
-                display: block !important;
-                visibility: visible !important;
-                opacity: 1 !important;
-                margin-left: 0 !important;
-                margin-right: 0 !important;
-                left: 0 !important;
-                top: 0 !important;
+                position: relative !important;
+                margin-left: auto !important;
+                margin-right: auto !important;
+                margin-top: 8px !important;
+                padding: 8px 16px 64px 16px !important;
                 width: 100% !important;
                 max-width: 100% !important;
-                padding: 10px 12px 64px 12px !important;
                 box-sizing: border-box !important;
-            }
-
-            /* Ensure parent wrappers of main don't shift right */
-            body > div {
-                margin-left: 0 !important;
-                left: 0 !important;
             }
 
             /* ========================================================
                3. NOTE CREATION BAR & ACTION BUTTONS PRESERVATION
-               Preserve Google Keep's native flex layout for action icons
-               (checkbox, drawing, image buttons) without forced stretching.
                ======================================================== */
             div[role="main"] [role="region"] {
                 margin-top: 6px !important;
@@ -450,20 +429,34 @@ pub const WIDGET_SCRIPT: &str = r##"
                 text-transform: uppercase !important;
             }
 
-            /* Sleek Custom Scrollbar */
+            /* ========================================================
+               4. HIDE SCROLLBAR / SLIDER COMPLETELY
+               ======================================================== */
             ::-webkit-scrollbar {
-                width: 5px;
-                height: 5px;
+                display: none !important;
+                width: 0 !important;
+                height: 0 !important;
             }
-            ::-webkit-scrollbar-track {
+            * {
+                -ms-overflow-style: none !important;
+                scrollbar-width: none !important;
+            }
+
+            /* ========================================================
+               5. TOP WINDOW DRAG BAR (FRAMELESS WIDGET)
+               ======================================================== */
+            #keep-window-drag-bar {
+                position: fixed;
+                top: 0;
+                left: 0;
+                right: 0;
+                height: 14px;
+                z-index: 2147483640;
+                cursor: grab;
                 background: transparent;
             }
-            ::-webkit-scrollbar-thumb {
-                background: rgba(150, 150, 150, 0.35);
-                border-radius: 3px;
-            }
-            ::-webkit-scrollbar-thumb:hover {
-                background: rgba(150, 150, 150, 0.6);
+            #keep-window-drag-bar:active {
+                cursor: grabbing;
             }
 
             /* ========================================================
@@ -708,24 +701,23 @@ pub const WIDGET_SCRIPT: &str = r##"
     function init() {
         injectStyles();
         initPill();
-        removeSidebarSafely();
+        hideSidebarRail();
 
-        // Safely observe mutations to remove sidebar when lazily loaded
+        // Safely observe DOM to collapse sidebar rail when lazily loaded
+        let sidebarTimer = null;
         const observer = new MutationObserver(() => {
-            removeSidebarSafely();
+            if (sidebarTimer) clearTimeout(sidebarTimer);
+            sidebarTimer = setTimeout(hideSidebarRail, 150);
         });
         observer.observe(document.body || document.documentElement, {
             childList: true,
-            subtree: true,
         });
 
-        // Periodic check to guarantee sidebar is removed without delay
-        let count = 0;
-        const interval = setInterval(() => {
-            removeSidebarSafely();
-            count++;
-            if (count > 25) clearInterval(interval);
-        }, 300);
+        // Disconnect observer after 8s so it never causes background churn or interference during note dragging
+        setTimeout(() => {
+            hideSidebarRail();
+            observer.disconnect();
+        }, 8000);
     }
 
     if (document.readyState === 'loading') {

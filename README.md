@@ -12,10 +12,11 @@ Aplikasi desktop widget porting untuk **Google Keep** (`https://keep.google.com/
   - Saat offline, Anda tetap dapat membaca, membuat catatan baru, mencentang checklist, dan mengedit catatan yang ada.
   - Saat internet terhubung kembali, Google Keep secara otomatis menyinkronkan seluruh perubahan ke akun Google Anda.
 
-- **📱 Mode Widget Desktop Kompak:**
-  - Dilengkapi *custom widget toolbar* modern bernuansa *glassmorphic frosted glass*.
-  - Mode Kompak (`📱`): Memangkas header Google yang terlalu lebar (menyembunyikan menu 9-titik dan tombol berlebih) agar tampilan catatan pas dan rapi di jendela widget desktop.
-  - Opsi *Zoom In/Out* (`+` / `-`) langsung dari toolbar untuk kenyamanan membaca di berbagai ukuran monitor.
+- **📱 Mode Widget Desktop Murni (Frameless & Clean):**
+  - **No Frame:** Tampilan murni widget tanpa bingkai OS Windows (tanpa titlebar, tombol minimize, maximize/resize, maupun close standar).
+  - **No Scroll Slider:** Slider scrollbar disembunyikan sepenuhnya agar tampilan bersih, namun tetap dapat di-scroll lancar dengan mousewheel / touchpad.
+  - **Easy Window Drag:** Pindahkan posisi widget dengan drag pada area atas jendela, klik & drag background kosong, atau gunakan ikon `✥` pada floating pill.
+  - **Floating Control Pill:** Dilengkapi tombol Pin (`📌`), Geser (`✥`), Pencarian (`🔍`), Zoom, Sinkronisasi (`🔄`), dan Tutup/Sembunyikan ke Tray (`✕`).
 
 - **📌 Always-on-Top (Pin to Desktop):**
   - Kunci widget agar selalu melayang di atas jendela aplikasi lain sehingga mudah mencatat ide kapan saja.

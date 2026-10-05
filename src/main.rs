@@ -21,12 +21,14 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tao::{
-    dpi::{LogicalPosition, LogicalSize},
+    dpi::{LogicalSize, PhysicalPosition},
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoopBuilder},
     window::WindowBuilder,
 };
-use tray_icon::{menu::MenuEvent, MouseButton, MouseButtonState, TrayIconEvent};
+#[cfg(target_os = "windows")]
+use tao::platform::windows::{WindowBuilderExtWindows, WindowExtWindows};
+use tray_icon::{menu::MenuEvent, MouseButtonState, TrayIconEvent};
 use wry::{NewWindowResponse, WebContext, WebViewBuilder};
 
 #[derive(Debug, Deserialize)]
@@ -42,6 +44,8 @@ pub enum IpcMessage {
     StatusChanged { status: String, text: String },
     #[serde(rename = "drag_window")]
     DragWindow,
+    #[serde(rename = "close_window")]
+    CloseWindow,
 }
 
 #[derive(Debug)]
@@ -109,6 +113,93 @@ fn is_allowed_internal_url(url: &str) -> bool {
     false
 }
 
+#[cfg(windows)]
+fn get_windows_work_area() -> Option<(i32, i32, i32, i32)> {
+    #[repr(C)]
+    struct RECT {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+
+    extern "system" {
+        fn SystemParametersInfoW(
+            ui_action: u32,
+            ui_param: u32,
+            pv_param: *mut std::ffi::c_void,
+            f_win_ini: u32,
+        ) -> i32;
+    }
+
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+
+    const SPI_GETWORKAREA: u32 = 0x0030;
+    let res = unsafe {
+        SystemParametersInfoW(
+            SPI_GETWORKAREA,
+            0,
+            &mut rect as *mut _ as *mut std::ffi::c_void,
+            0,
+        )
+    };
+
+    if res != 0 && (rect.right > rect.left) && (rect.bottom > rect.top) {
+        Some((rect.left, rect.top, rect.right, rect.bottom))
+    } else {
+        None
+    }
+}
+
+fn calculate_default_spawn_position(
+    monitor: Option<tao::monitor::MonitorHandle>,
+    width: f64,
+    height: f64,
+) -> (i32, i32) {
+    let margin_right = 24.0;
+    let margin_bottom = 20.0;
+
+    #[cfg(windows)]
+    if let Some((left, top, right, bottom)) = get_windows_work_area() {
+        let scale = monitor.as_ref().map(|m| m.scale_factor()).unwrap_or(1.0);
+
+        let win_w = (width * scale) as i32;
+        let win_h = (height * scale) as i32;
+        let pad_r = (margin_right * scale) as i32;
+        let pad_b = (margin_bottom * scale) as i32;
+
+        let spawn_x = (right - win_w - pad_r).max(left);
+        let spawn_y = (bottom - win_h - pad_b).max(top);
+
+        return (spawn_x, spawn_y);
+    }
+
+    if let Some(mon) = monitor {
+        let size = mon.size();
+        let scale = mon.scale_factor();
+        let mon_w = size.width as i32;
+        let mon_h = size.height as i32;
+        let taskbar_h = (48.0 * scale) as i32;
+
+        let win_w = (width * scale) as i32;
+        let win_h = (height * scale) as i32;
+        let pad_r = (margin_right * scale) as i32;
+        let pad_b = (margin_bottom * scale) as i32;
+
+        let spawn_x = mon_w - win_w - pad_r;
+        let spawn_y = mon_h - win_h - taskbar_h - pad_b;
+
+        return (spawn_x, spawn_y);
+    }
+
+    (100, 100)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Initialize Paths & Config
     let paths = AppPaths::init();
@@ -119,16 +210,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let proxy = event_loop.create_proxy();
 
     // 3. Build Window
+    let (default_x, default_y) = calculate_default_spawn_position(event_loop.primary_monitor(), config.width, config.height);
+    let (initial_x, initial_y) = match (config.x, config.y) {
+        (Some(x), Some(y)) => (x, y),
+        _ => (default_x, default_y),
+    };
+
     let mut window_builder = WindowBuilder::new()
         .with_title("Google Keep Widget")
         .with_inner_size(LogicalSize::new(config.width, config.height))
-        .with_min_inner_size(LogicalSize::new(320.0, 420.0))
+        .with_min_inner_size(LogicalSize::new(config.width, config.height))
+        .with_max_inner_size(LogicalSize::new(config.width, config.height))
+        .with_position(PhysicalPosition::new(initial_x, initial_y))
         .with_always_on_top(config.always_on_top)
-        .with_decorations(true)
+        .with_decorations(false)
+        .with_resizable(false)
         .with_visible(true);
 
-    if let (Some(x), Some(y)) = (config.x, config.y) {
-        window_builder = window_builder.with_position(LogicalPosition::new(x, y));
+    #[cfg(target_os = "windows")]
+    {
+        window_builder = window_builder.with_skip_taskbar(true);
     }
 
     if let Some(w_icon) = create_window_icon() {
@@ -137,8 +238,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let window = Arc::new(window_builder.build(&event_loop)?);
 
+    #[cfg(target_os = "windows")]
+    {
+        let _ = window.set_skip_taskbar(true);
+    }
+
     // 4. Initialize System Tray & Hotkey
-    let tray = AppTray::new(config.always_on_top, config.compact_mode)?;
+    let tray = AppTray::new()?;
     let hotkey_manager = AppHotKey::new().ok();
 
     // 5. Configure Persistent WebContext
@@ -160,6 +266,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut builder = WebViewBuilder::new_with_web_context(&mut web_context)
         .with_user_agent(USER_AGENT)
+        .with_devtools(true)
         .with_initialization_script(&init_script)
         .with_ipc_handler(move |req| {
             let body = req.body();
@@ -221,68 +328,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
-        // Process Tray Menu Events
+        // Process Tray Menu Events (Hanya pilihan "Keluar")
         while let Ok(menu_event) = menu_channel.try_recv() {
-            if menu_event.id == tray.id_toggle {
-                let visible = w.is_visible();
-                w.set_visible(!visible);
-                if !visible {
-                    w.set_focus();
-                }
-            } else if menu_event.id == tray.id_pin {
-                config.always_on_top = !config.always_on_top;
-                w.set_always_on_top(config.always_on_top);
-                tray.set_pin_checked(config.always_on_top);
-                let _ = webview.evaluate_script(&format!(
-                    "if (window.__KEEP_SET_PIN__) window.__KEEP_SET_PIN__({});",
-                    config.always_on_top
-                ));
-                let _ = config.save(&paths.config_file);
-            } else if menu_event.id == tray.id_compact {
-                config.compact_mode = !config.compact_mode;
-                tray.set_compact_checked(config.compact_mode);
-                let _ = webview.evaluate_script(&format!(
-                    "if (window.__KEEP_SET_COMPACT__) window.__KEEP_SET_COMPACT__({});",
-                    config.compact_mode
-                ));
-                let _ = config.save(&paths.config_file);
-            } else if menu_event.id == tray.id_sync {
-                let _ = webview.evaluate_script("window.location.reload();");
-            } else if menu_event.id == tray.id_cache {
-                let _ = open::that(&paths.webview_data_dir);
-            } else if menu_event.id == tray.id_quit {
+            if menu_event.id == tray.id_quit {
                 let _ = config.save(&paths.config_file);
                 *control_flow = ControlFlow::Exit;
             }
         }
 
-        // Process Tray Icon Left-Click Events
+        // Process Tray Icon Events (Klik pada tray tidak menutup window)
         while let Ok(tray_event) = tray_channel.try_recv() {
             if let TrayIconEvent::Click {
-                button,
                 button_state,
                 ..
             } = tray_event
             {
-                if button == MouseButton::Left && button_state == MouseButtonState::Up {
-                    let visible = w.is_visible();
-                    w.set_visible(!visible);
-                    if !visible {
-                        w.set_focus();
+                if button_state == MouseButtonState::Up {
+                    if !w.is_visible() {
+                        w.set_visible(true);
+                        #[cfg(target_os = "windows")]
+                        let _ = w.set_skip_taskbar(true);
                     }
+                    w.set_focus();
                 }
             }
         }
 
-        // Process Global Hotkey Events (Alt+Shift+K)
+        // Process Global Hotkey Events (Alt+Shift+K) - Fokuskan widget selalu terbuka
         while let Ok(hotkey_event) = hotkey_channel.try_recv() {
             if let Some(ref hk) = hotkey_manager {
                 if hk.is_toggle_event(&hotkey_event) {
-                    let visible = w.is_visible();
-                    w.set_visible(!visible);
-                    if !visible {
-                        w.set_focus();
+                    if !w.is_visible() {
+                        w.set_visible(true);
+                        #[cfg(target_os = "windows")]
+                        let _ = w.set_skip_taskbar(true);
                     }
+                    w.set_focus();
                 }
             }
         }
@@ -293,7 +374,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 IpcMessage::TogglePin => {
                     config.always_on_top = !config.always_on_top;
                     w.set_always_on_top(config.always_on_top);
-                    tray.set_pin_checked(config.always_on_top);
                     let _ = webview.evaluate_script(&format!(
                         "if (window.__KEEP_SET_PIN__) window.__KEEP_SET_PIN__({});",
                         config.always_on_top
@@ -302,7 +382,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 IpcMessage::ToggleCompact { value } => {
                     config.compact_mode = value;
-                    tray.set_compact_checked(value);
                     let _ = config.save(&paths.config_file);
                 }
                 IpcMessage::SetZoom { value } => {
@@ -321,17 +400,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 IpcMessage::DragWindow => {
                     let _ = w.drag_window();
                 }
+                IpcMessage::CloseWindow => {
+                    // Widget dikonfigurasi selalu terbuka dan tidak bisa ditutup
+                }
             },
 
             // Window Events
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::CloseRequested => {
-                    if config.minimize_to_tray {
-                        w.set_visible(false);
-                    } else {
-                        let _ = config.save(&paths.config_file);
-                        *control_flow = ControlFlow::Exit;
-                    }
+                    // Widget selalu terbuka dan tidak bisa ditutup kecuali lewat Tray -> Keluar
                 }
                 WindowEvent::Resized(size) => {
                     config.width = size.width as f64;
